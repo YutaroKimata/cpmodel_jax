@@ -27,7 +27,7 @@ print(100 * (result["welfare_ratio"] - 1))
 Economic inputs accept NumPy arrays, JAX arrays, or nested lists.
 `N` is the number of countries and `J` the number of sectors.
 Bilateral axes are **importer, exporter, sector**, including domestic flows;
-IO axes are **country, output sector, input sector**. Omitted policy inputs mean no change.
+IO axes are **country, output sector, input sector**.
 
 | Key | Shape | Description |
 | --- | --- | --- |
@@ -35,15 +35,11 @@ IO axes are **country, output sector, input sector**. Omitted policy inputs mean
 | `alpha` | `(N,J)` | Final expenditure shares, summing to one per country |
 | `beta` | `(N,J)` | Value-added shares in total production cost |
 | `gamma` | `(N,J,J)` | Intermediate cost shares; `beta + gamma.sum(2) = 1` |
-| `net_trade_value` | `(N,N,J)` | Baseline trade values excluding tariffs |
-| `tariff_rates` | `(N,N,J)` | Baseline tariff rates; `0.1` means 10% |
-| `counterfactual_tariff_rates` | `(N,N,J)` | Optional counterfactual tariff rates |
+| `baseline_net_trade_value` | `(N,N,J)` | Baseline trade values excluding tariffs |
+| `baseline_tariff_rates` | `(N,N,J)` | Baseline tariff rates; `0.1` means 10% |
+| `counterfactual_tariff_rates` | `(N,N,J)` | Counterfactual tariff rates; default: baseline rates |
 | `iceberg_cost_ratio` | `(N,N,J)` or scalar | Counterfactual/baseline iceberg costs; default `1.0` |
 | `technology_scale_ratio` | `(N,J)` or scalar | Counterfactual/baseline Fréchet scale parameters; default `1.0` |
-| `initial_log_hats` | `(N+2*N*J,)` | Optional warm start from a previous result's `log_hats` |
-| `tolerance` | scalar | Convergence tolerance; default `1e-5` |
-| `max_iter` | scalar | Maximum Newton iterations; default `60` |
-| `max_trials` | scalar | Maximum line-search trials per iteration; default `25` |
 
 ## Outputs
 
@@ -65,14 +61,14 @@ retain the input units.
 | `consumer_price_ratio` | `(N,)` | Consumption price index ratio |
 | `welfare_ratio` | `(N,)` | Real household income ratio |
 | `real_wage_ratio` | `(N,)` | Wage divided by the consumption price index, relative to baseline |
-| `trade_shares` | `(N,N,J)` | Counterfactual bilateral expenditure shares |
-| `expenditure` | `(N,J)` | Counterfactual sectoral expenditure |
-| `trade_value` | `(N,N,J)` | Counterfactual trade values including tariffs |
-| `net_trade_value` | `(N,N,J)` | Counterfactual trade values excluding tariffs |
-| `output` | `(N,J)` | Counterfactual gross output value |
-| `income` | `(N,)` | Counterfactual household income |
+| `counterfactual_trade_shares` | `(N,N,J)` | Counterfactual bilateral expenditure shares |
+| `counterfactual_expenditure` | `(N,J)` | Counterfactual sectoral expenditure |
+| `counterfactual_trade_value` | `(N,N,J)` | Counterfactual trade values including tariffs |
+| `counterfactual_net_trade_value` | `(N,N,J)` | Counterfactual trade values excluding tariffs |
+| `counterfactual_output` | `(N,J)` | Counterfactual gross output value |
+| `counterfactual_income` | `(N,)` | Counterfactual household income |
 | `iterations` | scalar | Number of Newton iterations |
-| `log_hats` | `(N+2*N*J,)` | Log wage, sectoral price, and expenditure ratios, packed for warm starts |
+| `log_ratios` | `(N+2*N*J,)` | Log wage, sectoral price, and expenditure ratios, packed for warm starts |
 | `residual` | `(N+2*N*J,)` | Equilibrium residuals |
 | `diagnostics` | — | Dictionary of maximum residual and relative labor-market errors |
 | `wall_seconds` | scalar | Solve time, including JIT compilation on first use |
