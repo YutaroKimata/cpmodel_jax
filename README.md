@@ -4,6 +4,8 @@ Exact-hat counterfactuals for the multi-country, multi-sector model of
 [Caliendo and Parro (2015)](https://doi.org/10.1093/restud/rdu035).
 Solves equilibrium equations using JAX automatic differentiation and Newton's method,
 without explicitly constructing the Jacobian matrix.
+Nominal trade deficits are fixed at baseline levels; world nominal value added
+is the numeraire.
 
 ## Install and use
 
@@ -22,44 +24,58 @@ print(100 * (result["welfare_ratio"] - 1))
 
 ## Inputs
 
-Inputs may be NumPy arrays, JAX arrays, or nested lists. Let `N` be countries
-and `J` sectors. Bilateral axes are **importer, exporter, sector**, including
-domestic flows; IO axes are **country, output sector, input sector**.
+Economic inputs accept NumPy arrays, JAX arrays, or nested lists.
+`N` is the number of countries and `J` the number of sectors.
+Bilateral axes are **importer, exporter, sector**, including domestic flows;
+IO axes are **country, output sector, input sector**. Omitted policy inputs mean no change.
 
-| Input | Shape | Meaning |
+| Key | Shape | Description |
 | --- | --- | --- |
 | `theta` | `(J,)` | Positive sectoral trade elasticities |
-| `alpha` | `(N,J)` | Final expenditure shares, summing to one |
-| `beta` | `(N,J)` | Positive value-added shares |
-| `gamma` | `(N,J,J)` | Intermediate shares in total production cost |
+| `alpha` | `(N,J)` | Final expenditure shares, summing to one per country |
+| `beta` | `(N,J)` | Value-added shares in total production cost |
+| `gamma` | `(N,J,J)` | Intermediate cost shares; `beta + gamma.sum(2) = 1` |
 | `net_trade_value` | `(N,N,J)` | Baseline trade values excluding tariffs |
 | `tariff_rates` | `(N,N,J)` | Baseline tariff rates; `0.1` means 10% |
-| `counterfactual_tariff_rates` | `(N,N,J)` | Optional new tariff rates |
-| `iceberg_cost_ratio` | `(N,N,J)` | Optional new/baseline iceberg costs |
-| `technology_scale_ratio` | `(N,J)` | Optional new/baseline Fréchet scale parameters |
-
-Omitted policy inputs mean no change; iceberg and technology ratios default to `1.0`.
-For each country and sector, `beta + gamma.sum(2)` must equal one.
-Zero bilateral flows are allowed; aggregate output, expenditure, value added,
-and income must be positive. Tariffs are nonnegative, shock ratios positive,
-and domestic iceberg ratios one.
-
-Nominal trade deficits stay fixed at baseline levels. World nominal value added
-is held constant as the price normalization.
+| `counterfactual_tariff_rates` | `(N,N,J)` | Optional counterfactual tariff rates |
+| `iceberg_cost_ratio` | `(N,N,J)` or scalar | Counterfactual/baseline iceberg costs; default `1.0` |
+| `technology_scale_ratio` | `(N,J)` or scalar | Counterfactual/baseline Fréchet scale parameters; default `1.0` |
+| `initial_log_hats` | `(N+2*N*J,)` | Optional warm start from a previous result's `log_hats` |
+| `tolerance` | scalar | Convergence tolerance; default `1e-5` |
+| `max_iter` | scalar | Maximum Newton iterations; default `60` |
+| `max_trials` | scalar | Maximum line-search trials per iteration; default `25` |
 
 ## Outputs
 
-The result is a dictionary of NumPy arrays. Ratios are counterfactual/baseline:
-`wage_ratio`, `sector_price_ratio`, `unit_cost_ratio`, `trade_share_ratio`,
-`expenditure_ratio`, `trade_value_ratio`, `net_trade_value_ratio`, `output_ratio`,
-`income_ratio`, `consumer_price_ratio`, `welfare_ratio`, and `real_wage_ratio`.
-Levels are `trade_shares`, `expenditure`, `trade_value`, `net_trade_value`,
-`output`, and `income`. Monetary levels retain the input units.
-`welfare_ratio` is household income divided by its consumption price index,
-relative to baseline.
+`solve` returns a dictionary. Economic outputs are NumPy arrays with the same axis
+conventions as the inputs. Ratios are counterfactual/baseline; monetary levels
+retain the input units.
 
-The result also includes `iterations`, `diagnostics`, and `wall_seconds`.
-Timing includes JIT compilation on first use.
+| Key | Shape | Description |
+| --- | --- | --- |
+| `wage_ratio` | `(N,)` | Wage ratio |
+| `sector_price_ratio` | `(N,J)` | Sectoral price index ratio |
+| `unit_cost_ratio` | `(N,J)` | Unit production cost ratio |
+| `trade_share_ratio` | `(N,N,J)` | Bilateral expenditure share ratio |
+| `expenditure_ratio` | `(N,J)` | Sectoral expenditure ratio |
+| `trade_value_ratio` | `(N,N,J)` | Trade value ratio, including tariffs |
+| `net_trade_value_ratio` | `(N,N,J)` | Trade value ratio, excluding tariffs |
+| `output_ratio` | `(N,J)` | Gross output value ratio |
+| `income_ratio` | `(N,)` | Household income ratio |
+| `consumer_price_ratio` | `(N,)` | Consumption price index ratio |
+| `welfare_ratio` | `(N,)` | Real household income ratio |
+| `real_wage_ratio` | `(N,)` | Wage divided by the consumption price index, relative to baseline |
+| `trade_shares` | `(N,N,J)` | Counterfactual bilateral expenditure shares |
+| `expenditure` | `(N,J)` | Counterfactual sectoral expenditure |
+| `trade_value` | `(N,N,J)` | Counterfactual trade values including tariffs |
+| `net_trade_value` | `(N,N,J)` | Counterfactual trade values excluding tariffs |
+| `output` | `(N,J)` | Counterfactual gross output value |
+| `income` | `(N,)` | Counterfactual household income |
+| `iterations` | scalar | Number of Newton iterations |
+| `log_hats` | `(N+2*N*J,)` | Log wage, sectoral price, and expenditure ratios, packed for warm starts |
+| `residual` | `(N+2*N*J,)` | Equilibrium residuals |
+| `diagnostics` | — | Dictionary of maximum residual and relative labor-market errors |
+| `wall_seconds` | scalar | Solve time, including JIT compilation on first use |
 
 ## NAFTA example
 
