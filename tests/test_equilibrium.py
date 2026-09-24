@@ -15,7 +15,7 @@ from cpmodel_jax import _prepare, newton, residual, solve
 def make_inputs(shock=True):
     countries, sectors = 4, 3
     rng = np.random.default_rng(20260923)
-    value_added0 = rng.uniform(0.7, 1.5, countries)
+    baseline_value_added = rng.uniform(0.7, 1.5, countries)
     sector_alpha = rng.uniform(0.5, 1.5, sectors)
     sector_alpha /= sector_alpha.sum()
     sector_beta = rng.uniform(0.4, 0.8, sectors)
@@ -23,18 +23,22 @@ def make_inputs(shock=True):
     beta = np.broadcast_to(sector_beta, (countries, sectors)).copy()
     gamma = (1 - beta[:, :, None]) * sector_alpha[None, None, :]
     openness = rng.uniform(0.25, 0.65, sectors)
-    domestic = np.diag(value_added0)
-    international = np.outer(value_added0, value_added0) / value_added0.sum()
-    net_trade_value0 = domestic[:, :, None] * (1 - openness) + international[:, :, None] * openness
-    net_trade_value0 *= sector_alpha / np.dot(sector_alpha, sector_beta)
-    tariff0 = np.zeros_like(net_trade_value0)
-    tariff = tariff0.copy()
-    iceberg_cost_ratio = np.ones_like(net_trade_value0)
+    domestic = np.diag(baseline_value_added)
+    international = (
+        np.outer(baseline_value_added, baseline_value_added) / baseline_value_added.sum()
+    )
+    baseline_net_trade_value = (
+        domestic[:, :, None] * (1 - openness) + international[:, :, None] * openness
+    )
+    baseline_net_trade_value *= sector_alpha / np.dot(sector_alpha, sector_beta)
+    baseline_tariff_rates = np.zeros_like(baseline_net_trade_value)
+    counterfactual_tariff_rates = baseline_tariff_rates.copy()
+    iceberg_cost_ratio = np.ones_like(baseline_net_trade_value)
     technology_scale_ratio = np.ones((countries, sectors))
     if shock:
-        tariff = rng.uniform(0.03, 0.12, net_trade_value0.shape)
-        tariff[np.arange(countries), np.arange(countries), :] = 0
-        iceberg_cost_ratio = rng.uniform(0.92, 0.98, net_trade_value0.shape)
+        counterfactual_tariff_rates = rng.uniform(0.03, 0.12, baseline_net_trade_value.shape)
+        counterfactual_tariff_rates[np.arange(countries), np.arange(countries), :] = 0
+        iceberg_cost_ratio = rng.uniform(0.92, 0.98, baseline_net_trade_value.shape)
         iceberg_cost_ratio[np.arange(countries), np.arange(countries), :] = 1
         technology_scale_ratio = rng.uniform(0.95, 1.10, (countries, sectors))
     theta = np.linspace(4.0, 6.0, sectors)
@@ -43,9 +47,9 @@ def make_inputs(shock=True):
         "alpha": alpha,
         "beta": beta,
         "gamma": gamma,
-        "net_trade_value": net_trade_value0,
-        "tariff_rates": tariff0,
-        "counterfactual_tariff_rates": tariff,
+        "baseline_net_trade_value": baseline_net_trade_value,
+        "baseline_tariff_rates": baseline_tariff_rates,
+        "counterfactual_tariff_rates": counterfactual_tariff_rates,
         "iceberg_cost_ratio": iceberg_cost_ratio,
         "technology_scale_ratio": technology_scale_ratio,
     }
@@ -56,18 +60,20 @@ def test_equilibrium():
     original = {key: value.copy() for key, value in inputs.items()}
     result = solve(**inputs)
     assert max(result["diagnostics"].values()) < 2e-5
-    assert solve(**inputs, initial_log_hats=result["log_hats"])["iterations"] == 0
-    net_trade_value = result["net_trade_value"]
-    tariff = inputs["counterfactual_tariff_rates"]
+    assert solve(**inputs, initial_log_ratios=result["log_ratios"])["iterations"] == 0
+    counterfactual_net_trade_value = result["counterfactual_net_trade_value"]
+    counterfactual_tariff_rates = inputs["counterfactual_tariff_rates"]
     alpha, beta, gamma = (inputs[key] for key in ("alpha", "beta", "gamma"))
-    net_trade_value0 = inputs["net_trade_value"]
-    value_added0 = (beta * net_trade_value0.sum(0)).sum(1)
-    deficit0 = net_trade_value0.sum((1, 2)) - net_trade_value0.sum((0, 2))
+    baseline_net_trade_value = inputs["baseline_net_trade_value"]
+    baseline_value_added = (beta * baseline_net_trade_value.sum(0)).sum(1)
+    baseline_deficit = baseline_net_trade_value.sum((1, 2)) - baseline_net_trade_value.sum((0, 2))
     np.testing.assert_allclose(
-        np.dot(value_added0, result["wage_ratio"]) / value_added0.sum(), 1, rtol=2e-5
+        np.dot(baseline_value_added, result["wage_ratio"]) / baseline_value_added.sum(),
+        1,
+        rtol=2e-5,
     )
     np.testing.assert_allclose(
-        np.exp(result["log_hats"]),
+        np.exp(result["log_ratios"]),
         np.concatenate(
             (
                 result["wage_ratio"],
@@ -77,28 +83,40 @@ def test_equilibrium():
         ),
         rtol=3e-6,
     )
-    income = result["wage_ratio"] * value_added0 + deficit0 + (net_trade_value * tariff).sum((1, 2))
-    demand = alpha * income[:, None] + np.einsum("nkj,nk->nj", gamma, result["output"])
-    np.testing.assert_allclose(result["income"], income, rtol=2e-5)
-    np.testing.assert_allclose(result["expenditure"], demand, rtol=2e-5)
-    np.testing.assert_allclose(result["output"], net_trade_value.sum(0), rtol=2e-5)
-    np.testing.assert_allclose(
-        (beta * result["output"]).sum(1), result["wage_ratio"] * value_added0, rtol=2e-5
+    counterfactual_income = (
+        result["wage_ratio"] * baseline_value_added
+        + baseline_deficit
+        + (counterfactual_net_trade_value * counterfactual_tariff_rates).sum((1, 2))
     )
-    np.testing.assert_allclose(result["trade_shares"].sum(1), 1, atol=1e-6)
+    counterfactual_demand = alpha * counterfactual_income[:, None] + np.einsum(
+        "nkj,nk->nj", gamma, result["counterfactual_output"]
+    )
+    np.testing.assert_allclose(result["counterfactual_income"], counterfactual_income, rtol=2e-5)
+    np.testing.assert_allclose(
+        result["counterfactual_expenditure"], counterfactual_demand, rtol=2e-5
+    )
+    np.testing.assert_allclose(
+        result["counterfactual_output"], counterfactual_net_trade_value.sum(0), rtol=2e-5
+    )
+    np.testing.assert_allclose(
+        (beta * result["counterfactual_output"]).sum(1),
+        result["wage_ratio"] * baseline_value_added,
+        rtol=2e-5,
+    )
+    np.testing.assert_allclose(result["counterfactual_trade_shares"].sum(1), 1, atol=1e-6)
     unit_cost_ratio = result["wage_ratio"][:, None] ** beta * np.prod(
         result["sector_price_ratio"][:, None, :] ** gamma, axis=2
     )
-    trade_shares0 = net_trade_value0 * (1 + inputs["tariff_rates"])
-    trade_shares0 /= trade_shares0.sum(1, keepdims=True)
+    baseline_trade_shares = baseline_net_trade_value * (1 + inputs["baseline_tariff_rates"])
+    baseline_trade_shares /= baseline_trade_shares.sum(1, keepdims=True)
     delivered_cost_ratio = (
         unit_cost_ratio[None, :, :]
         * inputs["iceberg_cost_ratio"]
-        * (1 + tariff)
-        / (1 + inputs["tariff_rates"])
+        * (1 + counterfactual_tariff_rates)
+        / (1 + inputs["baseline_tariff_rates"])
     )
     sector_price_ratio = (
-        trade_shares0
+        baseline_trade_shares
         * inputs["technology_scale_ratio"][None, :, :]
         * delivered_cost_ratio ** -inputs["theta"]
     ).sum(1) ** (-1 / inputs["theta"])
@@ -113,12 +131,20 @@ def test_analytic_no_shock():
     for key, value in result.items():
         if key.endswith("_ratio"):
             np.testing.assert_allclose(value, 1, atol=3e-6, rtol=0, err_msg=key)
-    net_trade_value0 = inputs["net_trade_value"]
-    np.testing.assert_allclose(result["net_trade_value"], net_trade_value0, rtol=3e-6)
-    np.testing.assert_allclose(result["expenditure"], net_trade_value0.sum(1), rtol=3e-6)
-    np.testing.assert_allclose(result["output"], net_trade_value0.sum(0), rtol=3e-6)
+    baseline_net_trade_value = inputs["baseline_net_trade_value"]
     np.testing.assert_allclose(
-        result["income"], (inputs["beta"] * net_trade_value0.sum(0)).sum(1), rtol=3e-6
+        result["counterfactual_net_trade_value"], baseline_net_trade_value, rtol=3e-6
+    )
+    np.testing.assert_allclose(
+        result["counterfactual_expenditure"], baseline_net_trade_value.sum(1), rtol=3e-6
+    )
+    np.testing.assert_allclose(
+        result["counterfactual_output"], baseline_net_trade_value.sum(0), rtol=3e-6
+    )
+    np.testing.assert_allclose(
+        result["counterfactual_income"],
+        (inputs["beta"] * baseline_net_trade_value.sum(0)).sum(1),
+        rtol=3e-6,
     )
 
 
@@ -126,14 +152,14 @@ def test_jvp():
     data = _prepare(**make_inputs())
     rng = np.random.default_rng(741)
     countries, sectors = data["beta"].shape
-    log_hats = jnp.asarray(0.02 * rng.normal(size=countries + 2 * countries * sectors))
-    _, jvp = jax.linearize(lambda x: residual(x, data), log_hats)
-    direction = rng.normal(size=log_hats.size)
+    log_ratios = jnp.asarray(0.02 * rng.normal(size=countries + 2 * countries * sectors))
+    _, jvp = jax.linearize(lambda x: residual(x, data), log_ratios)
+    direction = rng.normal(size=log_ratios.size)
     direction /= np.linalg.norm(direction)
     direction = jnp.asarray(direction, dtype=jnp.float32)
     finite_difference = (
-        np.asarray(residual(log_hats + 0.005 * direction, data))
-        - np.asarray(residual(log_hats - 0.005 * direction, data))
+        np.asarray(residual(log_ratios + 0.005 * direction, data))
+        - np.asarray(residual(log_ratios - 0.005 * direction, data))
     ) / 0.01
     assert (
         np.linalg.norm(np.asarray(jvp(direction)) - finite_difference)
@@ -145,26 +171,34 @@ def test_jvp():
 def test_nominal_scale_condition():
     data = _prepare(**make_inputs(shock=False))
     countries, sectors = data["beta"].shape
-    log_hats = jnp.full(countries + 2 * countries * sectors, jnp.log(1.1))
-    expected = np.zeros(log_hats.size)
+    log_ratios = jnp.full(countries + 2 * countries * sectors, jnp.log(1.1))
+    expected = np.zeros(log_ratios.size)
     expected[countries - 1] = np.log(1.1)
-    np.testing.assert_allclose(residual(log_hats, data), expected, atol=1e-6, rtol=0)
+    np.testing.assert_allclose(residual(log_ratios, data), expected, atol=1e-6, rtol=0)
 
 
 def test_units_and_country_permutation():
     inputs = make_inputs()
     reference = solve(**inputs)
-    scaled = solve(**{**inputs, "net_trade_value": inputs["net_trade_value"] * 1e9})
-    for key in ("wage_ratio", "sector_price_ratio", "welfare_ratio", "trade_shares"):
+    scaled = solve(
+        **{**inputs, "baseline_net_trade_value": inputs["baseline_net_trade_value"] * 1e9}
+    )
+    for key in ("wage_ratio", "sector_price_ratio", "welfare_ratio", "counterfactual_trade_shares"):
         np.testing.assert_allclose(scaled[key], reference[key], rtol=2e-5, atol=3e-6)
-    for key in ("expenditure", "trade_value", "net_trade_value", "output", "income"):
+    for key in (
+        "counterfactual_expenditure",
+        "counterfactual_trade_value",
+        "counterfactual_net_trade_value",
+        "counterfactual_output",
+        "counterfactual_income",
+    ):
         np.testing.assert_allclose(scaled[key] / 1e9, reference[key], rtol=2e-5, atol=3e-6)
     permutation = np.array([2, 0, 3, 1])
     permuted = {}
     for key, value in inputs.items():
         if key in (
-            "net_trade_value",
-            "tariff_rates",
+            "baseline_net_trade_value",
+            "baseline_tariff_rates",
             "counterfactual_tariff_rates",
             "iceberg_cost_ratio",
         ):
@@ -174,7 +208,7 @@ def test_units_and_country_permutation():
         else:
             permuted[key] = value[permutation]
     result = solve(**permuted)
-    for key in ("wage_ratio", "sector_price_ratio", "welfare_ratio", "output"):
+    for key in ("wage_ratio", "sector_price_ratio", "welfare_ratio", "counterfactual_output"):
         np.testing.assert_allclose(result[key], reference[key][permutation], rtol=2e-5, atol=3e-6)
 
 
@@ -184,23 +218,25 @@ def test_analytic_one_country_and_zero_links():
         "alpha": [[1.0]],
         "beta": [[1.0]],
         "gamma": [[[0.0]]],
-        "net_trade_value": [[[2.0]]],
-        "tariff_rates": [[[0.0]]],
+        "baseline_net_trade_value": [[[2.0]]],
+        "baseline_tariff_rates": [[[0.0]]],
     }
     result = solve(**inputs, technology_scale_ratio=[[1.21]])
     np.testing.assert_allclose(result["wage_ratio"], 1, atol=3e-7)
     np.testing.assert_allclose(result["welfare_ratio"], 1.21**0.25, atol=3e-7)
-    net_trade_value0 = np.array([[2.0, 1.0, 0.0], [1.0, 2.0, 1.0], [0.0, 1.0, 2.0]])[:, :, None]
+    baseline_net_trade_value = np.array([[2.0, 1.0, 0.0], [1.0, 2.0, 1.0], [0.0, 1.0, 2.0]])[
+        :, :, None
+    ]
     result = solve(
         theta=[4.0],
         alpha=np.ones((3, 1)),
         beta=np.ones((3, 1)),
         gamma=np.zeros((3, 1, 1)),
-        net_trade_value=net_trade_value0,
-        tariff_rates=np.zeros_like(net_trade_value0),
+        baseline_net_trade_value=baseline_net_trade_value,
+        baseline_tariff_rates=np.zeros_like(baseline_net_trade_value),
         technology_scale_ratio=[[1.1], [1.0], [0.9]],
     )
-    assert np.all(result["net_trade_value"][net_trade_value0 == 0] == 0)
+    assert np.all(result["counterfactual_net_trade_value"][baseline_net_trade_value == 0] == 0)
     assert max(result["diagnostics"].values()) < 2e-5
 
 

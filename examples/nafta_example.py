@@ -57,36 +57,39 @@ def load_nafta(archive_path):
     gamma = (1 - beta[:, :, None]) * conditional_io_shares
 
     nontradable_tariffs = np.zeros((20 * countries, countries))
-    tariff0 = bilateral(np.vstack((tariffs_1993, nontradable_tariffs))) / 100
+    baseline_tariff_rates = bilateral(np.vstack((tariffs_1993, nontradable_tariffs))) / 100
     tariffs_2005 = bilateral(np.vstack((tariffs_2005, nontradable_tariffs))) / 100
-    tariff = tariff0.copy()
+    counterfactual_tariff_rates = baseline_tariff_rates.copy()
     for importer in NAFTA.values():
         for exporter in NAFTA.values():
             if importer != exporter:
-                tariff[importer, exporter] = tariffs_2005[importer, exporter]
+                counterfactual_tariff_rates[importer, exporter] = tariffs_2005[importer, exporter]
 
     return {
         "theta": 1 / source["T"].ravel(),
         "alpha": source["alphas"].T,
         "beta": beta,
         "gamma": gamma,
-        "net_trade_value": bilateral(source["xbilattau"]),
-        "tariff_rates": tariff0,
-        "counterfactual_tariff_rates": tariff,
+        "baseline_net_trade_value": bilateral(source["xbilattau"]),
+        "baseline_tariff_rates": baseline_tariff_rates,
+        "counterfactual_tariff_rates": counterfactual_tariff_rates,
     }
 
 
 def paper_welfare(inputs, result):
-    net_trade_value0 = inputs["net_trade_value"]
-    tariff0 = inputs["tariff_rates"]
-    income0 = (inputs["beta"] * net_trade_value0.sum(0)).sum(1)
-    income0 += (net_trade_value0 * tariff0).sum((1, 2))
+    baseline_net_trade_value = inputs["baseline_net_trade_value"]
+    baseline_tariff_rates = inputs["baseline_tariff_rates"]
+    baseline_income = (inputs["beta"] * baseline_net_trade_value.sum(0)).sum(1)
+    baseline_income += (baseline_net_trade_value * baseline_tariff_rates).sum((1, 2))
     unit_cost_ratio = result["unit_cost_ratio"][None, :, :]
-    trade_cost_change = net_trade_value0 * (unit_cost_ratio - 1)
-    terms_of_trade = (trade_cost_change.sum((0, 2)) - trade_cost_change.sum((1, 2))) / income0
+    trade_cost_change = baseline_net_trade_value * (unit_cost_ratio - 1)
+    terms_of_trade = (
+        trade_cost_change.sum((0, 2)) - trade_cost_change.sum((1, 2))
+    ) / baseline_income
     volume_of_trade = (
-        tariff0 * (result["net_trade_value"] - net_trade_value0 * unit_cost_ratio)
-    ).sum((1, 2)) / income0
+        baseline_tariff_rates
+        * (result["counterfactual_net_trade_value"] - baseline_net_trade_value * unit_cost_ratio)
+    ).sum((1, 2)) / baseline_income
     return 100 * np.column_stack(
         (
             terms_of_trade + volume_of_trade,
@@ -117,7 +120,7 @@ def main():
         print(f"{country:<10} {row[0]:9.4f} {row[1]:9.4f} {row[2]:9.4f} {row[3]:10.4f}")
     print("All 12 Table 2 entries agree at the published two-decimal precision.")
     print("\nDirect real-income changes (%):", 100 * (result["welfare_ratio"][country_indices] - 1))
-    print("JAX dtype:", result["log_hats"].dtype)
+    print("JAX dtype:", result["log_ratios"].dtype)
     print("Newton iterations:", result["iterations"])
     print("Maximum equation error:", max(result["diagnostics"].values()))
     print("Solve seconds (includes JIT compilation):", result["wall_seconds"])

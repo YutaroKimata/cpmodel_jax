@@ -51,8 +51,8 @@ def _prepare(
     alpha,
     beta,
     gamma,
-    net_trade_value,
-    tariff_rates,
+    baseline_net_trade_value,
+    baseline_tariff_rates,
     counterfactual_tariff_rates=None,
     iceberg_cost_ratio=1.0,
     technology_scale_ratio=1.0,
@@ -61,10 +61,10 @@ def _prepare(
     alpha = np.asarray(alpha, dtype=float)
     beta = np.asarray(beta, dtype=float)
     gamma = np.asarray(gamma, dtype=float)
-    net_trade_value0 = np.asarray(net_trade_value, dtype=float)
-    tariff0 = np.asarray(tariff_rates, dtype=float)
-    tariff = (
-        tariff0
+    baseline_net_trade_value = np.asarray(baseline_net_trade_value, dtype=float)
+    baseline_tariff_rates = np.asarray(baseline_tariff_rates, dtype=float)
+    counterfactual_tariff_rates = (
+        baseline_tariff_rates
         if counterfactual_tariff_rates is None
         else np.asarray(counterfactual_tariff_rates, dtype=float)
     )
@@ -75,89 +75,107 @@ def _prepare(
     if not np.allclose(alpha.sum(1), 1) or not np.allclose(beta + gamma.sum(2), 1):
         raise ValueError("demand and production shares must sum to one")
 
-    output0 = net_trade_value0.sum(0)
-    trade_value0 = net_trade_value0 * (1 + tariff0)
-    expenditure0 = trade_value0.sum(1)
-    value_added0 = (beta * output0).sum(1)
-    deficit0 = net_trade_value0.sum((1, 2)) - net_trade_value0.sum((0, 2))
-    income0 = value_added0 + deficit0 + (net_trade_value0 * tariff0).sum((1, 2))
+    baseline_output = baseline_net_trade_value.sum(0)
+    baseline_trade_value = baseline_net_trade_value * (1 + baseline_tariff_rates)
+    baseline_expenditure = baseline_trade_value.sum(1)
+    baseline_value_added = (beta * baseline_output).sum(1)
+    baseline_deficit = baseline_net_trade_value.sum((1, 2)) - baseline_net_trade_value.sum((0, 2))
+    baseline_income = (
+        baseline_value_added
+        + baseline_deficit
+        + (baseline_net_trade_value * baseline_tariff_rates).sum((1, 2))
+    )
 
     expenditure_scale = np.maximum(
-        expenditure0, alpha * income0[:, None] + np.einsum("nkj,nk->nj", gamma, output0)
+        baseline_expenditure,
+        alpha * baseline_income[:, None] + np.einsum("nkj,nk->nj", gamma, baseline_output),
     )
-    trade_shares0 = trade_value0 / expenditure0[:, None, :]
+    baseline_trade_shares = baseline_trade_value / baseline_expenditure[:, None, :]
     with np.errstate(divide="ignore"):
-        log_trade_shares0 = np.log(trade_shares0)
+        log_baseline_trade_shares = np.log(baseline_trade_shares)
     log_cost_shock = np.log(technology_scale_ratio)[None, :, :] - theta * (
-        np.log1p(tariff) - np.log1p(tariff0) + np.log(iceberg_cost_ratio)
+        np.log1p(counterfactual_tariff_rates)
+        - np.log1p(baseline_tariff_rates)
+        + np.log(iceberg_cost_ratio)
     )
     data = {
         "theta": theta,
         "alpha": alpha,
         "beta": beta,
         "gamma": gamma,
-        "output0": output0,
-        "value_added0": value_added0,
-        "deficit0": deficit0,
-        "income0": income0,
-        "expenditure0": expenditure0,
+        "baseline_output": baseline_output,
+        "baseline_value_added": baseline_value_added,
+        "baseline_deficit": baseline_deficit,
+        "baseline_income": baseline_income,
+        "baseline_expenditure": baseline_expenditure,
         "expenditure_scale": expenditure_scale,
-        "tariff0": tariff0,
-        "tariff": tariff,
-        "net_share_factor": 1 / (1 + tariff),
-        "log_trade_weights": log_trade_shares0 + log_cost_shock,
+        "baseline_tariff_rates": baseline_tariff_rates,
+        "counterfactual_tariff_rates": counterfactual_tariff_rates,
+        "net_share_factor": 1 / (1 + counterfactual_tariff_rates),
+        "log_trade_weights": log_baseline_trade_shares + log_cost_shock,
         "log_cost_shock": log_cost_shock,
     }
     return {key: jnp.asarray(value, dtype=jnp.float32) for key, value in data.items()}
 
 
-def _state(log_hats, data):
+def _state(log_ratios, data):
     n, j = data["beta"].shape
-    log_wage_ratio = log_hats[:n]
-    log_sector_price_ratio = log_hats[n : n + n * j].reshape(n, j)
-    expenditure = data["expenditure0"] * jnp.exp(log_hats[n + n * j :].reshape(n, j))
+    log_wage_ratio = log_ratios[:n]
+    log_sector_price_ratio = log_ratios[n : n + n * j].reshape(n, j)
+    counterfactual_expenditure = data["baseline_expenditure"] * jnp.exp(
+        log_ratios[n + n * j :].reshape(n, j)
+    )
     log_unit_cost_ratio = data["beta"] * log_wage_ratio[:, None] + jnp.einsum(
         "njk,nk->nj", data["gamma"], log_sector_price_ratio
     )
     log_trade_weights = data["log_trade_weights"] - data["theta"] * log_unit_cost_ratio[None, :, :]
     log_share_denominator = logsumexp(log_trade_weights, axis=1)
-    trade_shares = jnp.exp(log_trade_weights - log_share_denominator[:, None, :])
-    net_trade_value = trade_shares * expenditure[:, None, :] * data["net_share_factor"]
-    output = net_trade_value.sum(0)
+    counterfactual_trade_shares = jnp.exp(log_trade_weights - log_share_denominator[:, None, :])
+    counterfactual_net_trade_value = (
+        counterfactual_trade_shares
+        * counterfactual_expenditure[:, None, :]
+        * data["net_share_factor"]
+    )
+    counterfactual_output = counterfactual_net_trade_value.sum(0)
     wage_ratio = jnp.exp(log_wage_ratio)
-    income = (
-        wage_ratio * data["value_added0"]
-        + data["deficit0"]
-        + (net_trade_value * data["tariff"]).sum((1, 2))
+    counterfactual_income = (
+        wage_ratio * data["baseline_value_added"]
+        + data["baseline_deficit"]
+        + (counterfactual_net_trade_value * data["counterfactual_tariff_rates"]).sum((1, 2))
     )
     return {
         "log_unit_cost_ratio": log_unit_cost_ratio,
         "log_sector_price_ratio": log_sector_price_ratio,
         "log_share_denominator": log_share_denominator,
-        "trade_shares": trade_shares,
-        "net_trade_value": net_trade_value,
+        "counterfactual_trade_shares": counterfactual_trade_shares,
+        "counterfactual_net_trade_value": counterfactual_net_trade_value,
         "wage_ratio": wage_ratio,
-        "output": output,
-        "income": income,
-        "expenditure": expenditure,
+        "counterfactual_output": counterfactual_output,
+        "counterfactual_income": counterfactual_income,
+        "counterfactual_expenditure": counterfactual_expenditure,
     }
 
 
 @jax.jit
-def residual(log_hats, data):
-    state = _state(log_hats, data)
-    log_wage_ratio_target = jnp.log((data["beta"] * state["output"]).sum(1) / data["value_added0"])
-    wage_residual = log_hats[: state["wage_ratio"].size - 1] - log_wage_ratio_target[:-1]
+def residual(log_ratios, data):
+    state = _state(log_ratios, data)
+    log_wage_ratio_target = jnp.log(
+        (data["beta"] * state["counterfactual_output"]).sum(1) / data["baseline_value_added"]
+    )
+    wage_residual = log_ratios[: state["wage_ratio"].size - 1] - log_wage_ratio_target[:-1]
     numeraire_residual = jnp.log(
-        (data["value_added0"] * state["wage_ratio"]).sum() / data["value_added0"].sum()
+        (data["baseline_value_added"] * state["wage_ratio"]).sum()
+        / data["baseline_value_added"].sum()
     )
     price_residual = (
         state["log_sector_price_ratio"] + state["log_share_denominator"] / data["theta"]
     )
-    demand = data["alpha"] * state["income"][:, None] + jnp.einsum(
-        "nkj,nk->nj", data["gamma"], state["output"]
+    counterfactual_demand = data["alpha"] * state["counterfactual_income"][:, None] + jnp.einsum(
+        "nkj,nk->nj", data["gamma"], state["counterfactual_output"]
     )
-    expenditure_residual = (state["expenditure"] - demand) / data["expenditure_scale"]
+    expenditure_residual = (state["counterfactual_expenditure"] - counterfactual_demand) / data[
+        "expenditure_scale"
+    ]
     r = jnp.concatenate(
         (
             wage_residual,
@@ -166,21 +184,23 @@ def residual(log_hats, data):
             expenditure_residual.ravel(),
         )
     )
-    return jnp.where(jnp.all(state["income"] > 0), r, jnp.full_like(r, jnp.nan))
+    return jnp.where(jnp.all(state["counterfactual_income"] > 0), r, jnp.full_like(r, jnp.nan))
 
 
 @jax.jit
-def _results(log_hats, data):
-    state = _state(log_hats, data)
+def _results(log_ratios, data):
+    state = _state(log_ratios, data)
     trade_share_ratio = jnp.exp(
         data["log_cost_shock"]
         - data["theta"] * state["log_unit_cost_ratio"][None, :, :]
         - state["log_share_denominator"][:, None, :]
     )
-    expenditure_ratio = state["expenditure"] / data["expenditure0"]
-    trade_value = state["trade_shares"] * state["expenditure"][:, None, :]
+    expenditure_ratio = state["counterfactual_expenditure"] / data["baseline_expenditure"]
+    counterfactual_trade_value = (
+        state["counterfactual_trade_shares"] * state["counterfactual_expenditure"][:, None, :]
+    )
     consumer_price_ratio = jnp.exp((data["alpha"] * state["log_sector_price_ratio"]).sum(1))
-    income_ratio = state["income"] / data["income0"]
+    income_ratio = state["counterfactual_income"] / data["baseline_income"]
     values = {
         "wage_ratio": state["wage_ratio"],
         "sector_price_ratio": jnp.exp(state["log_sector_price_ratio"]),
@@ -190,24 +210,25 @@ def _results(log_hats, data):
         "trade_value_ratio": trade_share_ratio * expenditure_ratio[:, None, :],
         "net_trade_value_ratio": trade_share_ratio
         * expenditure_ratio[:, None, :]
-        * (1 + data["tariff0"])
-        / (1 + data["tariff"]),
-        "output_ratio": state["output"] / data["output0"],
+        * (1 + data["baseline_tariff_rates"])
+        / (1 + data["counterfactual_tariff_rates"]),
+        "output_ratio": state["counterfactual_output"] / data["baseline_output"],
         "income_ratio": income_ratio,
         "consumer_price_ratio": consumer_price_ratio,
         "welfare_ratio": income_ratio / consumer_price_ratio,
         "real_wage_ratio": state["wage_ratio"] / consumer_price_ratio,
-        "trade_shares": state["trade_shares"],
-        "expenditure": state["expenditure"],
-        "trade_value": trade_value,
-        "net_trade_value": state["net_trade_value"],
-        "output": state["output"],
-        "income": state["income"],
+        "counterfactual_trade_shares": state["counterfactual_trade_shares"],
+        "counterfactual_expenditure": state["counterfactual_expenditure"],
+        "counterfactual_trade_value": counterfactual_trade_value,
+        "counterfactual_net_trade_value": state["counterfactual_net_trade_value"],
+        "counterfactual_output": state["counterfactual_output"],
+        "counterfactual_income": state["counterfactual_income"],
     }
 
     labor_error = jnp.max(
         jnp.abs(
-            (data["beta"] * state["output"]).sum(1) / (state["wage_ratio"] * data["value_added0"])
+            (data["beta"] * state["counterfactual_output"]).sum(1)
+            / (state["wage_ratio"] * data["baseline_value_added"])
             - 1
         )
     )
@@ -220,12 +241,12 @@ def solve(
     alpha,
     beta,
     gamma,
-    net_trade_value,
-    tariff_rates,
+    baseline_net_trade_value,
+    baseline_tariff_rates,
     counterfactual_tariff_rates=None,
     iceberg_cost_ratio=1.0,
     technology_scale_ratio=1.0,
-    initial_log_hats=None,
+    initial_log_ratios=None,
     tolerance=1e-5,
     max_iter=60,
     max_trials=25,
@@ -236,30 +257,30 @@ def solve(
         alpha,
         beta,
         gamma,
-        net_trade_value,
-        tariff_rates,
+        baseline_net_trade_value,
+        baseline_tariff_rates,
         counterfactual_tariff_rates,
         iceberg_cost_ratio,
         technology_scale_ratio,
     )
     n, j = data["beta"].shape
-    if initial_log_hats is None:
-        initial_log_hats = jnp.concatenate(
+    if initial_log_ratios is None:
+        initial_log_ratios = jnp.concatenate(
             (
                 jnp.zeros(n + n * j, dtype=jnp.float32),
-                jnp.log(data["expenditure_scale"] / data["expenditure0"]).ravel(),
+                jnp.log(data["expenditure_scale"] / data["baseline_expenditure"]).ravel(),
             )
         )
     root = newton(
         residual,
         data,
-        initial_log_hats,
+        initial_log_ratios,
         tol=tolerance,
         max_iter=max_iter,
         max_trials=max_trials,
     )
-    log_hats = root["z"]
-    values, labor_error = _results(log_hats, data)
+    log_ratios = root["z"]
+    values, labor_error = _results(log_ratios, data)
     values = {key: np.asarray(value) for key, value in values.items()}
     diagnostics = {
         "residual_inf": float(jnp.max(jnp.abs(root["residual"]))),
@@ -268,14 +289,14 @@ def solve(
     if (
         not diagnostics["labor_error"] <= 100 * tolerance
         or any(not np.all(np.isfinite(v)) for v in values.values())
-        or np.any(values["income"] <= 0)
+        or np.any(values["counterfactual_income"] <= 0)
     ):
         raise RuntimeError("equilibrium verification failed")
     return {
         **values,
         "diagnostics": diagnostics,
         "iterations": root["iterations"],
-        "log_hats": np.asarray(log_hats),
+        "log_ratios": np.asarray(log_ratios),
         "residual": np.asarray(root["residual"]),
         "wall_seconds": perf_counter() - start,
     }
