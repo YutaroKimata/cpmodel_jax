@@ -89,14 +89,14 @@ def test_units_and_country_permutation():
 
 
 def test_analytic_one_country_and_zero_links():
-    one = dict(
-        trade_elasticities=[4.0],
-        final_demand_shares=[[1.0]],
-        value_added_shares=[[1.0]],
-        input_output_shares=[[[0.0]]],
-        net_trade_value=[[[2.0]]],
-        tariff_rates=[[[0.0]]],
-    )
+    one = {
+        "trade_elasticities": [4.0],
+        "final_demand_shares": [[1.0]],
+        "value_added_shares": [[1.0]],
+        "input_output_shares": [[[0.0]]],
+        "net_trade_value": [[[2.0]]],
+        "tariff_rates": [[[0.0]]],
+    }
     result = solve(**one, technology_scale_ratio=[[1.21]])
     np.testing.assert_allclose(result["wage_ratio"], 1, atol=1e-14)
     np.testing.assert_allclose(result["welfare_ratio"], 1.21**0.25, atol=1e-12)

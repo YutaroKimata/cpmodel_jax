@@ -29,7 +29,7 @@ classifiers = [
 dependencies = ["jax>=0.11.2,<0.12", "numpy>=2.0,<3"]
 
 [project.optional-dependencies]
-dev = ["pytest>=9.1.1", "build>=1.6.1,<2", "twine>=7.0.0,<7", "ruff>=0.16.8,<1"]
+dev = ["pytest>=9.1.1", "build>=1.6.1,<2", "twine>=7.0.0,<8", "ruff>=0.16.8,<1"]
 
 [tool.setuptools]
 py-modules = ["cpmodel_jax"]
