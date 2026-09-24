@@ -17,13 +17,12 @@ For the pinned numerical dependency versions, pass
 `-c requirements-validation.txt` to the install command. The package metadata
 uses compatible ranges; the constraints describe the validated environment.
 
-Keep economic equations separate from the Newton backend. Preserve importer /
+Keep economic equations separate from Newton functions within `src/cpmodel_jax.py`. Preserve importer /
 exporter / sector axes, closure, normalization, and exact welfare definitions.
 Do not silently reconcile baselines or replace zero trade with positive values.
 Changes to model conventions require documentation and reference validation.
 
-Tests construct synthetic baselines analytically, compare independent
-formulations, and check conservation and derivative identities. Maintain these
+Tests construct synthetic baselines analytically, check conservation, analytic equilibria, and derivative identities. Maintain these
 checks when changing the model; do not treat agreement between two solvers as
 a substitute for an analytic or economic check.
 
@@ -32,7 +31,7 @@ of the checkout, and run the examples and tests against the installed package.
 CI includes this check. Test the actual wheel, not just editable imports.
 
 The initial package version is in `pyproject.toml` and
-`src/cpmodel_jax/__init__.py`; a test checks they agree. Update both, the
+`src/cpmodel_jax.py`; a test checks they agree. Update both, the
 changelog, and `CITATION.cff` for releases. No automatic publishing workflow is
 configured. Choose an available PyPI name and add verified repository URLs
 before publishing. Benchmark cold and warm calls separately and retain raw

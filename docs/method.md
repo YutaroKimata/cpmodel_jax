@@ -15,8 +15,8 @@ All money is internally divided by world baseline value added. Let `V0`, `D`,
 `Y0`, `E0`, `I0` denote quantities in these units; `sum(V0)=1`. The closure is
 fixed nominal baseline trade deficits, with `sum(V0*w_hat)=1`. This is the model
 closure and normalization. Results restore the original
-monetary units. Neither formulation solves the model in levels from uncalibrated
-technology/endowment primitives; both implement its exact-hat counterfactual.
+monetary units. This implements exact-hat counterfactuals, not levels from uncalibrated
+technology/endowment primitives.
 
 Precompute log bilateral weights from baseline expenditure shares and policy:
 
@@ -36,7 +36,7 @@ L_{nj}=\operatorname{logsumexp}_i(a_{nij}-\theta_j\log\hat c_{ij}),
 Zeros in `pi0` become `-inf` log weights, not positive pseudo-trade. Unit costs
 are Cobb--Douglas in log wages/prices, with no `log(exp(x)+epsilon)` detour.
 
-### Default: augmented equations
+### Equilibrium equations
 
 Unknowns: `N-1` relative log wages, `N*J` log prices and `N*J` log expenditure
 ratios. Weighted log normalization imposes the numeraire. Unit costs are
@@ -51,72 +51,29 @@ consistency is separately checked, so this is an equivalent equilibrium
 system, not a change to trade demand. All original market/accounting
 conditions are checked on the final result.
 
-### Alternative: costs and output only
-
-Unknowns: `N*J` log unit costs and `N*J-1` relative log output ratios. For free
-coordinates `u`, set the pivot coordinate to zero and use
-
-\[
-Y_{nj}=\frac{Y^0_{nj}e^{u_{nj}}}
-                 {\sum_{ik}\beta_{ik}Y^0_{ik}e^{u_{ik}}},
-\quad \hat w_n=\frac{\sum_j\beta_{nj}Y_{nj}}{V^0_n}.
-\]
-
-Price and shares come directly from the log-sum-exp above. Intermediate demand
-is `B_nj=sum_k gamma_nkj*Y_nk`. Let
-
-\[
-t_{nj}=\sum_i\frac{\tau'_{nij}}{1+\tau'_{nij}}\pi'_{nij}.
-\]
-
-The equations `E=final_demand_shares*I+B` and `I=w_hat*V0+D+sum_j t_j E_j` give an **exact
-scalar elimination per country**:
-
-\[
-I_n=\frac{\sum_j\beta_{nj}Y_{nj}+D_n+\sum_jt_{nj}B_{nj}}
-           {1-\sum_j\alpha_{nj}t_{nj}},\qquad E_{nj}=\alpha_{nj}I_n+B_{nj}.
-\]
-
-The code evaluates the denominator as
-`sum_j alpha_nj * sum_i pi_nij/(1+tau_nij)` for numerical stability.
-Only two sets of equations remain:
-
-\[
-F_c=\log\hat c-\beta\log\hat w-\gamma\log\hat p=0,
-\quad F_Y=\log Y-\log\left(\sum_n\pi'_{nij}E_{nj}/(1+\tau'_{nij})\right)=0.
-\]
-
-One goods equation is redundant: the accounting identities imply
-`sum(sales)=sum(Y)` for any candidate state (including off equilibrium), since
-`sum(D)=0`. We omit the largest baseline-output sector and check **all** goods
-markets after solving. Choosing the largest sector avoids amplifying a small
-omitted absolute discrepancy into the relative error of a tiny sector.
-
-This reduces the dimension by N, but couples equations through the eliminated
-variables. It is available as an alternative formulation for research. Fewer
-unknowns do not guarantee fewer Krylov operations.
-Krylov counts are not exposed by the JAX API, so this is an explanation of the
-possible mechanism, not a measured iteration-count attribution.
-
 ## Numerical execution and scope
 
-Both Newton and backtracking run inside compiled `jax.lax.while_loop` loops.
-Each Newton step uses `jax.linearize` and GMRES with an independently checked
-linear residual. There is no full Jacobian, expenditure LU, or dense fallback.
-Restarted GMRES stores Krylov vectors and a small Hessenberg matrix; matrix-free
-does not mean memory-free. Dense bilateral data still require `O(N^2 J)` storage.
+Newton and backtracking use ordinary Python `for` loops. Each Newton direction
+uses `jax.linearize` and GMRES inside a JIT-compiled function. Residual evaluation
+and final outcomes/checks are also compiled. There is no full Jacobian,
+expenditure LU, or dense fallback.
 
-No Python/device synchronization occurs inside a nonlinear iteration. Result
-extraction, full economic checks, and final synchronization are included in
-`wall_seconds`. Compilation is included on the first use of a new shape/static
-option. Changing options can trigger compilation; policy arrays of the same
-shape use dynamic data. Histories store nonlinear errors, linear solve errors,
-step lengths and backtracking counts, not unavailable Krylov iteration counts.
+GMRES convergence is checked by explicitly evaluating the linear residual.
+A backtracking search reduces the step until the residual norm decreases.
+The final solution must pass every original economic equation, including the
+omitted labor condition. Numerical failures raise `RuntimeError`.
 
-This is CPU-validated, float64 code. No GPU performance claim or implicit
-gradient-through-equilibrium API is provided. In particular, JAX's dynamic
-`while_loop` is not a reverse-mode differentiable equilibrium layer; Jv inside
-Newton is a different capability. Disconnected trade networks can have
-additional unidentified nominal scales. No automatic continuation,
-preconditioner, rebalancing, or hidden fixed-point fallback is included.
+Python reads scalar convergence information each iteration. This costs some
+synchronization compared with a fully compiled loop, but keeps the control flow
+readable. Restarted GMRES stores Krylov vectors and a small Hessenberg matrix;
+bilateral arrays still require `O(N^2 J)` storage.
 
+`wall_seconds` includes input validation/preparation, the solve, outcome
+extraction, and economic checks. Compilation is included on the first use of a
+new shape or static GMRES setting. Histories record nonlinear and linear errors,
+step lengths, and backtracking counts, not Krylov iteration counts.
+
+This is CPU-validated float64 code. GPU performance and differentiation through
+the equilibrium solution have not been implemented or validated. Disconnected
+trade networks can have additional unidentified nominal scales. No automatic
+continuation, preconditioner, or fixed-point fallback is included.

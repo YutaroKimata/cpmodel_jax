@@ -29,46 +29,38 @@ python examples/quickstart.py
 ## Quick start
 
 ```python
-from cpmodel_jax import NewtonOptions, load_example, solve
+from cpmodel_jax import load_example, solve
 
-economy = load_example("full")
-result = solve(
-    economy,
-    NewtonOptions(tolerance=1e-10),
-)
+inputs = load_example("full")
+result = solve(**inputs, tolerance=1e-10)
 
-print(result.values["welfare_ratio"])
-print(result.diagnostics)
+print(result["welfare_ratio"])
+print(result["diagnostics"])
 ```
 
 Available examples are `no_shock`, `tariff`, `iceberg`, `combined`, `technology`, and `full`. They use reproducibly generated synthetic data.
 
 ## Using your own data
 
-Create a baseline economy with `Calibration`, specify a counterfactual, and solve:
+Pass model inputs directly to `solve`:
 
 ```python
-from cpmodel_jax import Calibration, solve
+from cpmodel_jax import solve
 
-baseline = Calibration(
+result = solve(
     trade_elasticities=trade_elasticities,
     final_demand_shares=final_demand_shares,
     value_added_shares=value_added_shares,
     input_output_shares=input_output_shares,
     net_trade_value=net_trade_value,
     tariff_rates=tariff_rates,
-)
-
-economy = baseline.economy(
     counterfactual_tariff_rates=counterfactual_tariff_rates,
     iceberg_cost_ratio=iceberg_cost_ratio,
     technology_scale_ratio=technology_scale_ratio,
 )
-
-result = solve(economy)
 ```
 
-The same `Calibration` can be reused across counterfactuals. Omitted policy arguments remain at their baseline values.
+Inputs can also be stored in a dictionary and passed with `solve(**inputs)`. Omitted policy arguments remain at their baseline values.
 
 See [the complete custom-input example](examples/custom_inputs.py).
 
@@ -92,15 +84,15 @@ Bilateral arrays are ordered as importer, exporter, sector and include domestic 
 
 ## Results
 
-Equilibrium outcomes are available through `result.values`.
+Equilibrium outcomes are available directly in the result dictionary.
 
 ```python
-result.values["wage_ratio"]
-result.values["sector_price_ratio"]
-result.values["trade_value_ratio"]
-result.values["output_ratio"]
-result.values["income_ratio"]
-result.values["welfare_ratio"]
+result["wage_ratio"]
+result["sector_price_ratio"]
+result["trade_value_ratio"]
+result["output_ratio"]
+result["income_ratio"]
+result["welfare_ratio"]
 ```
 
 Variables ending in `_ratio` are counterfactual-to-baseline ratios. A value of `1.05` represents a 5% increase.
@@ -108,21 +100,25 @@ Variables ending in `_ratio` are counterfactual-to-baseline ratios. A value of `
 Level outputs are also available:
 
 ```python
-result.values["trade_shares"]
-result.values["expenditure"]
-result.values["trade_value"]
-result.values["net_trade_value"]
-result.values["output"]
-result.values["income"]
+result["trade_shares"]
+result["expenditure"]
+result["trade_value"]
+result["net_trade_value"]
+result["output"]
+result["income"]
 ```
 
 Solver diagnostics, iteration counts, and elapsed time can be inspected with:
 
 ```python
-print(result.diagnostics)
-print(int(result.root.steps))
-print(result.wall_seconds)
+print(result["diagnostics"])
+print(result["iterations"])
+print(result["wall_seconds"])
 ```
+
+The implementation is in [`src/cpmodel_jax.py`](src/cpmodel_jax.py): ordinary functions and dictionaries, with Python loops for Newton and backtracking. JAX compiles residual evaluation and the matrix-free GMRES step.
+
+Version 0.5 replaces the class-based API. See the [migration notes](docs/api.md).
 
 ## Documentation
 

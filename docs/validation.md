@@ -34,17 +34,18 @@ These examples are not estimated economies or empirical evidence.
 ## Independent checks
 
 - Analytic no-shock results: all ratios equal one and flows/income reproduce
-  the constructed baseline, for both formulations and two model sizes.
+  the constructed baseline, for two model sizes.
 - One-country technology shock: with trade elasticity 4 and no intermediate
   inputs, welfare equals the fourth root of the technology-distribution ratio.
-- All 18 outputs agree between augmented and cost/output formulations across
-  six small scenarios and a 16×10 case. This complements the analytic checks;
-  shared code means formulation agreement alone is not a proof of correctness.
+- During the 0.5 refactor, all 18 outputs were compared against both previous
+  formulations across six scenarios and a 16×10 case. Those comparisons were
+  migration checks; the alternative implementation is no longer shipped.
 - Off-equilibrium accounting identities, full market clearing, national income,
   expenditure, share normalization, and the numeraire.
 - Automatic directional derivatives compared with centered finite differences.
 - Money-unit scaling, country relabeling, zero trade links, explicit warm starts,
-  immutable inputs, invalid data, and numerical failure reporting.
+  unchanged inputs, invalid data, and numerical failure reporting.
+- A model-independent quadratic root and backtracking success/failure checks.
 
 ## Reproduce
 
@@ -60,7 +61,7 @@ results. Tests are also run against an installed wheel outside the source tree.
 
 The benchmark records versions, device, precision, nonlinear residuals,
 Newton steps, setup, first-call latency, and all warm samples. Each solve
-synchronizes and checks economic equations. First-call time includes compilation
+includes input preparation, synchronizes, and checks economic equations. First-call time includes compilation
 but is not a process-startup measurement. Warm calls start from the default
 state, not the previous solution. No Krylov iteration counts are inferred from
 Newton steps.

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0
+
+- Consolidated the implementation into `src/cpmodel_jax.py`.
+- Replaced model/options/result classes with functions, keyword arguments, and dictionaries.
+- Kept only the wage/price/expenditure equilibrium formulation.
+- Replaced compiled control-flow loops with Python Newton/backtracking loops;
+  residual evaluation and matrix-free GMRES remain JIT compiled.
+- Preserved economic output names, closure, float64 precision, and convergence checks.
+- Changed `wall_seconds` to include input preparation. See `docs/api.md` for migration.
+
 ## 0.4.0 — 2026-09-23
 
 - Rename all six calibration fields and three policy arguments to descriptive

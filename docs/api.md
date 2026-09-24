@@ -1,120 +1,68 @@
-# Public API
+# API
+
+All implementation code is in `src/cpmodel_jax.py`.
 
 ```python
-from cpmodel_jax import (
-    Calibration,
-    NewtonOptions,
-    Equilibrium,
-    SolveError,
-    AugmentedEconomy,
-    CostOutputEconomy,
-    load_example,
-    solve,
-)
+from cpmodel_jax import load_example, solve
+
+inputs = load_example("full", countries=4, sectors=3)
+result = solve(**inputs, tolerance=1e-10)
+print(result["welfare_ratio"])
 ```
 
-## Calibration and counterfactuals
+`solve` takes six required keyword arguments: `trade_elasticities`,
+`final_demand_shares`, `value_added_shares`, `input_output_shares`,
+`net_trade_value`, and `tariff_rates`. See the README for shapes and units.
+Optional `counterfactual_tariff_rates`, `iceberg_cost_ratio`, and
+`technology_scale_ratio` default to no change. Inputs are validated and never
+modified, reconciled, or clipped. Share sums must agree within `1e-10`.
 
-`Calibration` copies and validates its six baseline inputs:
+The result is a plain dictionary. It contains the same 18 economic outputs as
+version 0.4, plus `diagnostics`, `iterations`, `z`, `residual`, `history`, and
+`wall_seconds`. Monetary levels are in the input units. Ratios are new/baseline;
+`100 * (result["welfare_ratio"] - 1)` gives percentage changes.
 
-```python
-baseline = Calibration(
-    trade_elasticities=trade_elasticities,
-    final_demand_shares=final_demand_shares,
-    value_added_shares=value_added_shares,
-    input_output_shares=input_output_shares,
-    net_trade_value=net_trade_value,
-    tariff_rates=tariff_rates,
-)
-economy = baseline.economy(
-    counterfactual_tariff_rates=counterfactual_tariff_rates,
-    iceberg_cost_ratio=iceberg_cost_ratio,
-    technology_scale_ratio=technology_scale_ratio,
-    formulation="augmented",
-)
-```
+For a warm start, pass `z0=previous_result["z"]` for the same country/sector
+ordering. `z` holds relative log wages, log prices, and log expenditure ratios.
+Changing the model or its dimensions requires a suitable new initial state.
 
-The same descriptive names are used for stored calibration attributes. Baseline
-arrays are read-only. `tariff_rates` is the baseline rate and
-`counterfactual_tariff_rates` is the new rate, both in decimal units. Cost and
-technology shocks are ratios. The latter scales the Fréchet distribution
-parameter. Array axes and restrictions are in the README.
+## Numerical options
 
-All three policy arguments default to `None` (unchanged). Preparing an economy
-does not solve it. The alternative formulation is `"cost_output"`.
-`economy.num_countries` and `economy.num_sectors` expose its dimensions.
+`solve` forwards numerical keywords to `newton`:
 
-Version 0.4 replaces the previous symbolic constructor and policy names; use
-these descriptive keywords for both formulations. Output names are unchanged.
-
-`load_example(name="full", *, formulation="augmented", countries=4, sectors=3, seed=20260923)` constructs a fresh
-synthetic economy locally. Its baseline is analytically balanced. Valid names
-are exposed as `EXAMPLE_NAMES`; a fixed seed reproduces the same inputs.
-
-## Solving
-
-`solve(economy, options=NewtonOptions(), *, z0=None) -> Equilibrium`
-
-Default options:
-
-| Option | Default | Meaning |
+| Keyword | Default | Meaning |
 | --- | --- | --- |
-| `tolerance` | `1e-10` | Infinity norm of scaled nonlinear residual |
-| `max_steps` | `60` | Maximum Newton iterations |
+| `tolerance` | `1e-10` | Maximum absolute scaled nonlinear residual |
+| `max_steps` | `60` | Maximum Newton updates |
 | `restart` | `60` | GMRES restart length, capped by unknown count |
-| `max_cycles` | `30` | Maximum GMRES restart cycles per Newton step |
-| `max_backtracks` | `25` | Maximum trial lengths per line search |
-| `max_log_step` | `1.0` | Maximum absolute coordinate step before backtracking |
-| `armijo` | `1e-4` | Required residual decrease parameter |
+| `max_cycles` | `30` | Maximum GMRES restart cycles |
+| `max_backtracks` | `25` | Trial lengths per line search |
+| `max_log_step` | `1.0` | Maximum absolute coordinate update before backtracking |
+| `armijo` | `1e-4` | Required decrease in residual norm |
 
-Final economic checks use `max(1e-8, 100*tolerance)` while the scaled nonlinear
-residual must meet `tolerance`. These are different tests. Invalid inputs raise
-`ValueError`; numerical failure raises `SolveError` with a `.root` attribute.
+Economic checks use `max(1e-8, 100*tolerance)` in addition to the nonlinear
+residual criterion. Invalid inputs raise `ValueError`; failed convergence or
+economic verification raises `RuntimeError`.
 
-For an explicit warm start in the default formulation:
+`newton(function, data, z0, **options)` also works independently of the CP model.
+`function(z, data)` must be a pure JAX-compatible residual with the same vector
+shape as `z`. It returns a dictionary containing `z`, `residual`, `steps`, and
+`history`. No CP equations are used by this function.
 
-```python
-first = solve(economy)
-z0 = economy.pack(
-    wage_ratio=first.values["wage_ratio"],
-    sector_price_ratio=first.values["sector_price_ratio"],
-    expenditure=first.values["expenditure"],
-)
-second = solve(economy, z0=z0)
-```
-
-For `cost_output`, use `economy.pack(unit_cost_ratio, output)`. Packers require the
-numeraire and use levels in the original monetary units. Coordinates differ
-between formulations and must not be exchanged.
-
-## Result and convergence history
-
-- `values`: NumPy arrays with descriptive keys; definitions are in the README. `_ratio` means counterfactual divided by baseline, so
-  `100 * (values["welfare_ratio"] - 1)` gives the welfare percentage change.
-- `diagnostics`: scalar errors for residuals, prices, costs, goods/labor
-  markets, expenditure, income, share sums, and numeraire.
-- `root`: JAX arrays `z`, `residual`, `steps`, `status`, and `history`.
-- `wall_seconds`: synchronized solve, outcomes, and economic checks. It excludes
-  economy construction and includes compilation when needed.
-
-History columns are available as `cpmodel_jax.newton.HISTORY_COLUMNS`:
+History has one row per completed update and columns listed in `HISTORY_COLUMNS`:
 `residual_inf`, `residual_l2`, `forcing_eta`, `linear_relative_residual`,
 `step_length`, `backtracks`, `next_residual_inf`, `gmres_info`.
-These are nonlinear iteration records, not counts of Krylov iterations.
 
-Root status codes: `0` converged, `1` iteration limit, `2` nonfinite initial
-residual, `3` linear solve failure, `4` line search failure, `5` failed economic
-verification. Only status zero is returned successfully by `solve`.
+Import enables JAX float64. `solve` is an ordinary host-side Python function;
+wrapping it in `jax.grad` is not an implicit equilibrium differentiation API.
 
-## Low-level numerical interface
+## Changes from 0.4
 
-`cpmodel_jax.newton.newton(function, data, z0, options)` accepts a pure residual
-`function(z, data)` with the same vector shape as `z`. It returns a `Root` and
-does not raise on numerical failure; call `require_converged(root)` explicitly.
-This advanced module is model-independent but is not a stable public API yet.
-Likewise, internal `model` and `augmented` helpers may change.
-
-Changing shapes or static solver options can trigger JIT compilation. Same-shape
-policy arrays are dynamic inputs. Import enables JAX float64 globally; changing
-that setting afterward is unsupported. The host-facing `solve` cannot simply
-be wrapped in `jax.grad`: an implicit differentiation interface is future work.
+- `load_example` returns an input dictionary; use `solve(**load_example())`.
+- Pass custom arrays directly to `solve`; `Calibration` and economy objects were removed.
+- Pass numerical options as keywords; `NewtonOptions` was removed.
+- Read `result["welfare_ratio"]`, not `result.values["welfare_ratio"]`.
+- Read `result["iterations"]`, not `result.root.steps`.
+- Only the wage/price/expenditure formulation remains; there is no `formulation` option.
+- Catch `RuntimeError` for numerical failures; `SolveError` and status codes were removed.
+- `wall_seconds` now includes preparation, previously done by the economy constructor.

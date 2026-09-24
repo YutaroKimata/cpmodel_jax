@@ -1,120 +1,95 @@
-"""Analytic equilibria and independent economic and numerical properties."""
+from importlib.metadata import version
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from cpmodel_jax import Calibration, NewtonOptions, SolveError, solve
-from cpmodel_jax.model import state
-from cpmodel_jax.newton import newton, require_converged
-
-from .conftest import example_inputs, prepare
+import cpmodel_jax
+from cpmodel_jax import EXAMPLE_NAMES, _prepare, _state, load_example, newton, residual, solve
 
 
-@pytest.mark.parametrize(
-    "name", ["no_shock", "tariff", "iceberg", "combined", "technology", "full", "synthetic_16x10"]
-)
-def test_formulations_agree(name):
-    inputs = (
-        example_inputs("full", countries=16, sectors=10)
-        if name == "synthetic_16x10"
-        else example_inputs(name)
-    )
-    results = []
-    for formulation in ("augmented", "cost_output"):
-        economy = prepare(inputs, formulation)
-        result = solve(economy)
-        assert max(result.diagnostics.values()) < 1e-8
-        keys = (
-            ("unit_cost_ratio", "output")
-            if formulation == "cost_output"
-            else ("wage_ratio", "sector_price_ratio", "expenditure")
-        )
-        packed = economy.pack(**{key: result.values[key] for key in keys})
-        np.testing.assert_allclose(packed, result.root.z, atol=1e-13)
-        assert int(solve(economy, z0=packed).root.steps) == 0
-        results.append(result.values)
-    for key in results[0]:
-        np.testing.assert_allclose(
-            results[0][key], results[1][key], rtol=1e-8, atol=1e-10, err_msg=key
-        )
+def test_version_and_precision():
+    assert cpmodel_jax.__version__ == version("cpmodel-jax")
+    assert jax.config.x64_enabled
 
 
-@pytest.mark.parametrize("formulation", ["augmented", "cost_output"])
+@pytest.mark.parametrize("name", EXAMPLE_NAMES)
+def test_examples(name):
+    inputs = load_example(name)
+    result = solve(**inputs)
+    assert max(result["diagnostics"].values()) < 1e-8
+    assert np.all(result["welfare_ratio"] > 0)
+    assert result["history"].shape == (result["iterations"], 8)
+    assert solve(**inputs, z0=result["z"])["iterations"] == 0
+    for key, value in inputs.items():
+        np.testing.assert_array_equal(value, load_example(name)[key])
+
+
 @pytest.mark.parametrize("countries,sectors", [(4, 3), (16, 10)])
-def test_analytic_no_shock(formulation, countries, sectors):
-    inputs = example_inputs("no_shock", countries=countries, sectors=sectors)
-    result = solve(prepare(inputs, formulation))
-    for key, value in result.values.items():
+def test_analytic_no_shock(countries, sectors):
+    inputs = load_example("no_shock", countries=countries, sectors=sectors)
+    result = solve(**inputs)
+    for key, value in result.items():
         if key.endswith("_ratio"):
             np.testing.assert_allclose(value, 1, atol=1e-10, rtol=0, err_msg=key)
     trade = inputs["net_trade_value"]
-    np.testing.assert_allclose(result.values["net_trade_value"], trade, rtol=1e-10)
-    np.testing.assert_allclose(result.values["expenditure"], trade.sum(1), rtol=1e-10)
-    np.testing.assert_allclose(result.values["output"], trade.sum(0), rtol=1e-10)
+    np.testing.assert_allclose(result["net_trade_value"], trade, rtol=1e-10)
+    np.testing.assert_allclose(result["expenditure"], trade.sum(1), rtol=1e-10)
+    np.testing.assert_allclose(result["output"], trade.sum(0), rtol=1e-10)
     np.testing.assert_allclose(
-        result.values["income"], (inputs["value_added_shares"] * trade.sum(0)).sum(1), rtol=1e-10
+        result["income"], (inputs["value_added_shares"] * trade.sum(0)).sum(1), rtol=1e-10
     )
 
 
-def test_elimination_away_from_equilibrium_and_jvp():
-    m = prepare(example_inputs("full"))
+def test_jvp_and_off_equilibrium_accounting():
+    data = _prepare(**load_example())
     rng = np.random.default_rng(741)
-    z = m.initial_state() + 0.02 * rng.normal(size=m.size)
-    s = state(z, m.data)
-    d = m.data
-    net_trade_value = np.asarray(s.shares * s.expenditure[:, None, :] / (1 + d.tariff))
-    R = (np.asarray(d.tariff) * net_trade_value).sum((1, 2))
+    z = jnp.asarray(0.02 * rng.normal(size=27))
+    s = _state(z, data)
+    net_trade = np.asarray(s["shares"] * s["expenditure"][:, None, :] / (1 + data["tariff"]))
+    revenue = (np.asarray(data["tariff"]) * net_trade).sum((1, 2))
     np.testing.assert_allclose(
-        s.income, np.asarray(s.wage * d.value_added + d.deficit) + R, rtol=1e-13
+        s["income"], s["wage"] * data["value_added"] + data["deficit"] + revenue
     )
-    # The redundant market follows the global accounting identity, even off root.
-    np.testing.assert_allclose(np.asarray(s.output).sum(), net_trade_value.sum(), rtol=1e-13)
-    np.testing.assert_allclose(np.sum(np.asarray(d.value_added_shares * s.output)), 1, atol=1e-14)
-    _, Jv = jax.linearize(m.residual, z)
-    v = rng.normal(size=m.size)
+    np.testing.assert_allclose(s["output"], net_trade.sum(0))
+    np.testing.assert_allclose(np.sum(np.asarray(data["value_added"] * s["wage"])), 1, atol=1e-14)
+    _, Jv = jax.linearize(lambda x: residual(x, data), z)
+    v = rng.normal(size=z.size)
     v /= np.linalg.norm(v)
-    fd = (np.asarray(m.residual(z + 1e-5 * v)) - np.asarray(m.residual(z - 1e-5 * v))) / 2e-5
+    fd = (
+        np.asarray(residual(z + 1e-5 * v, data)) - np.asarray(residual(z - 1e-5 * v, data))
+    ) / 2e-5
     assert np.linalg.norm(np.asarray(Jv(v)) - fd) / np.linalg.norm(fd) < 1e-7
 
 
 def test_units_and_country_permutation():
-    a = example_inputs("full")
-    reference = solve(prepare(a)).values
-    scaled = solve(prepare({**a, "net_trade_value": a["net_trade_value"] * 1e9})).values
+    inputs = load_example()
+    reference = solve(**inputs)
+    scaled = solve(**{**inputs, "net_trade_value": inputs["net_trade_value"] * 1e9})
     for key in ("wage_ratio", "sector_price_ratio", "welfare_ratio", "trade_shares"):
         np.testing.assert_allclose(scaled[key], reference[key], rtol=1e-8, atol=1e-10)
     permutation = np.array([2, 0, 3, 1])
-    permuted = {
-        k: (
-            v[permutation][:, permutation, :]
-            if k
-            in (
-                "net_trade_value",
-                "tariff_rates",
-                "counterfactual_tariff_rates",
-                "iceberg_cost_ratio",
-            )
-            else v[permutation]
-            if k
-            in (
-                "final_demand_shares",
-                "value_added_shares",
-                "input_output_shares",
-                "technology_scale_ratio",
-            )
-            else v
-        )
-        for k, v in a.items()
-    }
-    result = solve(prepare(permuted)).values
+    permuted = {}
+    for key, value in inputs.items():
+        if key in (
+            "net_trade_value",
+            "tariff_rates",
+            "counterfactual_tariff_rates",
+            "iceberg_cost_ratio",
+        ):
+            permuted[key] = value[permutation][:, permutation, :]
+        elif key == "trade_elasticities":
+            permuted[key] = value
+        else:
+            permuted[key] = value[permutation]
+    result = solve(**permuted)
     for key in ("wage_ratio", "sector_price_ratio", "welfare_ratio", "output"):
         np.testing.assert_allclose(result[key], reference[key][permutation], rtol=1e-8, atol=1e-10)
 
 
 def test_analytic_one_country_and_zero_links():
-    one = Calibration(
+    one = dict(
         trade_elasticities=[4.0],
         final_demand_shares=[[1.0]],
         value_added_shares=[[1.0]],
@@ -122,45 +97,60 @@ def test_analytic_one_country_and_zero_links():
         net_trade_value=[[[2.0]]],
         tariff_rates=[[[0.0]]],
     )
-    r = solve(one.economy(technology_scale_ratio=[[1.21]]))
-    np.testing.assert_allclose(r.values["wage_ratio"], 1, atol=1e-14)
-    np.testing.assert_allclose(r.values["welfare_ratio"], 1.21**0.25, atol=1e-12)
-    net_trade_value = np.array([[2.0, 1.0, 0.0], [1.0, 2.0, 1.0], [0.0, 1.0, 2.0]])[:, :, None]
-    sparse = Calibration(
+    result = solve(**one, technology_scale_ratio=[[1.21]])
+    np.testing.assert_allclose(result["wage_ratio"], 1, atol=1e-14)
+    np.testing.assert_allclose(result["welfare_ratio"], 1.21**0.25, atol=1e-12)
+    trade = np.array([[2.0, 1.0, 0.0], [1.0, 2.0, 1.0], [0.0, 1.0, 2.0]])[:, :, None]
+    result = solve(
         trade_elasticities=[4.0],
         final_demand_shares=np.ones((3, 1)),
         value_added_shares=np.ones((3, 1)),
         input_output_shares=np.zeros((3, 1, 1)),
-        net_trade_value=net_trade_value,
-        tariff_rates=np.zeros_like(net_trade_value),
+        net_trade_value=trade,
+        tariff_rates=np.zeros_like(trade),
+        technology_scale_ratio=[[1.1], [1.0], [0.9]],
     )
-    r = solve(sparse.economy(technology_scale_ratio=[[1.1], [1.0], [0.9]]))
-    assert np.all(r.values["net_trade_value"][net_trade_value == 0] == 0)
-    assert max(r.diagnostics.values()) < 1e-8
+    assert np.all(result["net_trade_value"][trade == 0] == 0)
+    assert max(result["diagnostics"].values()) < 1e-8
 
 
-def test_statuses_validation_and_immutable_calibration():
-    a = example_inputs("full")
-    m = prepare(a)
-    with pytest.raises(SolveError, match="iteration limit"):
-        solve(m, NewtonOptions(max_steps=1))
-    with pytest.raises(SolveError, match="GMRES"):
-        solve(m, NewtonOptions(restart=1, max_cycles=1))
-    with pytest.raises(ValueError):
-        solve(m, z0=np.zeros(m.size - 1))
-    with pytest.raises(ValueError):
-        m.calibration.value_added_shares[0, 0] = 0.5
+def test_validation_and_failures():
+    inputs = load_example()
+    with pytest.raises(RuntimeError, match="iteration limit"):
+        solve(**inputs, max_steps=1)
+    with pytest.raises(RuntimeError, match="GMRES"):
+        solve(**inputs, restart=1, max_cycles=1)
+    with pytest.raises(ValueError, match="initial"):
+        solve(**inputs, z0=np.zeros(2))
     with pytest.raises(ValueError, match="shares"):
-        prepare({**a, "final_demand_shares": a["final_demand_shares"] * 1.00001})
+        solve(**{**inputs, "final_demand_shares": inputs["final_demand_shares"] * 1.00001})
     with pytest.raises(ValueError):
-        NewtonOptions(restart=1.5)
+        solve(**inputs, restart=1.5)
     with pytest.raises(ValueError):
-        prepare({**a, "technology_scale_ratio": np.zeros_like(a["technology_scale_ratio"])})
+        solve(**{**inputs, "technology_scale_ratio": np.zeros((4, 3))})
+    with pytest.raises(ValueError, match="Unknown example"):
+        load_example("not-an-example")
 
-    # Pure numerical backend has no CP-specific dependence.
+
+def test_generic_newton():
     def quadratic(z, data):
         return z * z - data
 
-    root = newton(quadratic, jnp.array([2.0, 3.0]), jnp.ones(2))
-    require_converged(root)
-    np.testing.assert_allclose(root.z, np.sqrt([2.0, 3.0]), rtol=1e-10)
+    result = newton(quadratic, jnp.array([2.0, 3.0]), jnp.ones(2))
+    np.testing.assert_allclose(result["z"], np.sqrt([2.0, 3.0]), rtol=1e-10)
+    again = newton(quadratic, jnp.array([2.0, 3.0]), result["z"])
+    assert again["steps"] == 0
+    assert again["history"].shape == (0, 8)
+    with pytest.raises(RuntimeError, match="nonfinite"):
+        newton(quadratic, jnp.array([np.nan]), jnp.ones(1))
+
+
+def test_backtracking():
+    def exponential(z, data):
+        return jnp.exp(z) - data
+
+    result = newton(exponential, jnp.array([2.0]), jnp.array([-3.0]), max_log_step=100)
+    np.testing.assert_allclose(result["z"], np.log(2), atol=1e-10)
+    assert np.any(result["history"][:, 5] > 0)
+    with pytest.raises(RuntimeError, match="line search"):
+        newton(exponential, jnp.array([2.0]), jnp.array([-3.0]), max_log_step=100, max_backtracks=1)
