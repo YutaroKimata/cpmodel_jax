@@ -1,150 +1,122 @@
 # CPModel-JAX
 
-CPModel-JAX is a Python package for computing exact-hat counterfactual equilibria in the multi-country, multi-sector trade model of Caliendo and Parro (2015).
+Exact-hat counterfactuals for the multi-country, multi-sector model of
+[Caliendo and Parro (2015)](https://doi.org/10.1093/restud/rdu035).
+One Python module: JAX residuals, automatic `Jv`, and matrix-free Newton–GMRES.
 
-Given baseline trade flows, input-output structure, final expenditure, tariffs, and trade elasticities, it computes counterfactual equilibria under changes in tariffs, iceberg trade costs, and technology. Equilibria are solved in JAX with a Newton–Krylov method.
+## Install and use
 
-## Installation
-
-CPModel-JAX requires Python 3.12 or later.
-
-```sh
-python -m venv .venv
-
-# macOS / Linux
-source .venv/bin/activate
-
-# Windows PowerShell
-# .venv\Scripts\Activate.ps1
-
-python -m pip install .
-```
-
-Run the included example with:
+Python 3.12+ is required. In another project:
 
 ```sh
-python examples/quickstart.py
+uv add git+https://github.com/YutaroKimata/cpmodel_jax.git
 ```
-
-## Quick start
-
-```python
-from cpmodel_jax import load_example, solve
-
-inputs = load_example("full")
-result = solve(**inputs, tolerance=1e-10)
-
-print(result["welfare_ratio"])
-print(result["diagnostics"])
-```
-
-Available examples are `no_shock`, `tariff`, `iceberg`, `combined`, `technology`, and `full`. They use reproducibly generated synthetic data.
-
-## Using your own data
-
-Pass model inputs directly to `solve`:
 
 ```python
 from cpmodel_jax import solve
 
-result = solve(
-    trade_elasticities=trade_elasticities,
-    final_demand_shares=final_demand_shares,
-    value_added_shares=value_added_shares,
-    input_output_shares=input_output_shares,
-    net_trade_value=net_trade_value,
-    tariff_rates=tariff_rates,
-    counterfactual_tariff_rates=counterfactual_tariff_rates,
-    iceberg_cost_ratio=iceberg_cost_ratio,
-    technology_scale_ratio=technology_scale_ratio,
-)
+result = solve(**inputs)
+print(100 * (result["welfare_ratio"] - 1))
 ```
 
-Inputs can also be stored in a dictionary and passed with `solve(**inputs)`. Omitted policy arguments remain at their baseline values.
+Inputs may be NumPy arrays, JAX arrays, or nested lists. Let `N` be countries
+and `J` sectors. Bilateral axes are **importer, exporter, sector**, including
+domestic flows; IO axes are **country, output sector, input sector**.
 
-See [the complete custom-input example](examples/custom_inputs.py).
-
-## Inputs
-
-Let `N` denote the number of countries and `J` the number of sectors.
-
-| Input | Shape | Description |
+| Input | Shape | Meaning |
 | --- | --- | --- |
-| `trade_elasticities` | `(J,)` | Sectoral trade elasticities |
-| `final_demand_shares` | `(N, J)` | Final expenditure shares |
-| `value_added_shares` | `(N, J)` | Value-added shares |
-| `input_output_shares` | `(N, J, J)` | Intermediate input shares |
-| `net_trade_value` | `(N, N, J)` | Baseline bilateral trade values, net of tariffs |
-| `tariff_rates` | `(N, N, J)` | Baseline tariff rates |
-| `counterfactual_tariff_rates` | `(N, N, J)` | Counterfactual tariff rates |
-| `iceberg_cost_ratio` | `(N, N, J)` | Counterfactual-to-baseline iceberg cost ratios |
-| `technology_scale_ratio` | `(N, J)` | Counterfactual-to-baseline technology-scale ratios |
+| `theta` | `(J,)` | Positive sectoral trade elasticities |
+| `alpha` | `(N,J)` | Final expenditure shares, summing to one |
+| `beta` | `(N,J)` | Positive value-added shares |
+| `gamma` | `(N,J,J)` | Intermediate shares in total production cost |
+| `net_trade_value` | `(N,N,J)` | Baseline trade values excluding tariffs |
+| `tariff_rates` | `(N,N,J)` | Baseline tariff rates; `0.1` means 10% |
+| `counterfactual_tariff_rates` | `(N,N,J)` | Optional new tariff rates |
+| `iceberg_cost_ratio` | `(N,N,J)` | Optional new/baseline iceberg costs |
+| `technology_scale_ratio` | `(N,J)` | Optional new/baseline Fréchet scale parameters |
 
-Bilateral arrays are ordered as importer, exporter, sector and include domestic flows. Tariffs are rates, so `0.10` means 10%. For `iceberg_cost_ratio` and `technology_scale_ratio`, `1.0` denotes no change.
+Omitted policy inputs mean no change; iceberg and technology ratios default to `1.0`.
+Final demand shares and total production cost shares each sum to one, checked with
+NumPy’s default `allclose` tolerances. Supply valid economic values in the listed shapes.
+Zero bilateral flows are allowed; aggregate output, expenditure, value added,
+and income must be positive. Tariffs are nonnegative, shock ratios positive,
+and domestic iceberg ratios one.
 
-## Results
+The result is a dictionary of NumPy arrays. Ratios are counterfactual/baseline:
+`wage_ratio`, `sector_price_ratio`, `unit_cost_ratio`, `trade_share_ratio`,
+`expenditure_ratio`, `trade_value_ratio`, `net_trade_value_ratio`, `output_ratio`,
+`income_ratio`, `consumer_price_ratio`, `welfare_ratio`, and `real_wage_ratio`.
+Levels are `trade_shares`, `expenditure`, `trade_value`, `net_trade_value`,
+`output`, and `income`. Monetary levels retain the input units.
+`welfare_ratio` is household income divided by its consumption price index,
+relative to baseline.
 
-Equilibrium outcomes are available directly in the result dictionary.
+## Solver
 
-```python
-result["wage_ratio"]
-result["sector_price_ratio"]
-result["trade_value_ratio"]
-result["output_ratio"]
-result["income_ratio"]
-result["welfare_ratio"]
+`log_hats` concatenates log wage ratios (`N`), log price ratios (`N*J`),
+and log expenditure ratios (`N*J`), in that order. All ratios are counterfactual/baseline.
+The residual combines `N-1` labor equations, one nominal value-added condition,
+price consistency, and expenditure balance.
+Nominal baseline trade deficits stay fixed; baseline-value-added-weighted wages
+average one through the explicit condition
+`log(sum(value_added0 * wage_ratio) / sum(value_added0)) = 0`. Monetary values stay in the
+input units throughout the calculation. Newton uses `jax.linearize` and GMRES with
+backtracking, without a dense Jacobian, expenditure LU, or nested fixed-point iteration.
+
+JAX computations use float32; NumPy input preparation uses float64. Numerical
+options are `tolerance=1e-5`, `max_iter=60`, and `max_trials=25`. GMRES uses JAX defaults except
+`tol=0.01` (avoid oversolving intermediate Newton systems) and
+`solve_method="incremental"` (allow early termination within a restart).
+Failed line searches, nonfinite residuals, and nonconvergence raise `RuntimeError`.
+The final CP result also checks every labor equation, including the omitted one,
+within `100*tolerance`, and requires finite outputs and positive household income.
+
+A warm start is `initial_log_hats=previous_result["log_hats"]` with matching country/sector ordering.
+`newton(f, data, z0)` is independent of CP and solves `f(z, data)=0`
+for a float32 real vector, with options `tol=1e-5`, `max_iter=60`, and
+`max_trials=25`. This last option counts trial step lengths per Newton update,
+including the initial full step.
+It returns `z`, `residual`, and `iterations`.
+
+`solve` returns the economic outputs above plus `iterations`, `log_hats`, `residual`,
+`diagnostics` (residual and labor errors), and `wall_seconds`. Timing includes
+preparation, checks, and JIT compilation on first use.
+CPU execution is validated; GPU execution and differentiation through `solve` are not.
+
+## NAFTA example
+
+From a checkout of this repository:
+
+```sh
+uv run examples/nafta_example.py
 ```
 
-Variables ending in `_ratio` are counterfactual-to-baseline ratios. A value of `1.05` represents a 5% increase.
+The script downloads the [authors' replication archive](https://faculty.som.yale.edu/lorenzocaliendo/estimates-of-the-trade-and-welfare-effects-of-nafta/)
+to `.cache/`, checks its SHA-256, and uses their 31-country, 40-sector no-deficit
+baseline. Only intra-NAFTA tariffs change from 1993 to 2005. Technology and
+iceberg costs stay fixed. Use `--archive /path/to/Data_and_Codes_CP.zip` offline.
 
-Level outputs are also available:
+One negative conditional IO entry (Canada, output 11, input 20; `-0.0008459`)
+is explicitly zeroed, then nonzero conditional IO vectors are normalized.
+The adjusted baseline is not an exact unit-hat equilibrium. This reproduces
+Table 2 at its published precision, not the original MATLAB calculation bit for bit.
+All 12 entries are checked within 0.005 percentage points: total welfare is
+1.3121% for Mexico, -0.0638% for Canada, and 0.0848% for the USA.
 
-```python
-result["trade_shares"]
-result["expenditure"]
-result["trade_value"]
-result["net_trade_value"]
-result["output"]
-result["income"]
-```
-
-Solver diagnostics, iteration counts, and elapsed time can be inspected with:
-
-```python
-print(result["diagnostics"])
-print(result["iterations"])
-print(result["wall_seconds"])
-```
-
-The implementation is in [`src/cpmodel_jax.py`](src/cpmodel_jax.py): ordinary functions and dictionaries, with Python loops for Newton and backtracking. JAX compiles residual evaluation and the matrix-free GMRES step.
-
-Version 0.5 replaces the class-based API. See the [migration notes](docs/api.md).
-
-## Documentation
-
-See:
-
-- [API guide](docs/api.md) for the public API and result objects.
-- [Equations and solver](docs/method.md) for the economic model and numerical method.
-- [Validation](docs/validation.md) for tests and numerical validation.
+**Table 2 uses the authors' finite-change `Welfarelineal.m` decomposition.**
+It differs from `100*(welfare_ratio-1)`, which gives about 0.0073%, -0.1101%,
+and 0.0742%, respectively. The example prints both measures separately and
+implements the decomposition in `paper_welfare`. Source data are downloaded,
+not redistributed or covered by this repository's MIT license.
 
 ## Development
 
 ```sh
-python -m pip install -e '.[dev]'
-python -m pytest
-python benchmarks/benchmark.py --repeats 10 --output benchmark-results.json
+uv sync --extra dev
+uv run pytest
+uv run ruff check .
+uv run ruff format --check .
+uv run python -m build
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and [CHANGELOG.md](CHANGELOG.md) for release history.
-
-## Reference
-
-Caliendo, L. and Parro, F. (2015), “Estimates of the Trade and Welfare Effects of NAFTA,” *Review of Economic Studies*, 82(1), 1–44.
-https://doi.org/10.1093/restud/rdu035
-
-Citation metadata is available in [CITATION.cff](CITATION.cff).
-
-## License
-
-MIT License. See [LICENSE](LICENSE).
+MIT license; see [LICENSE](LICENSE).

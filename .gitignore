@@ -1,12 +1,7 @@
 .venv/
 __pycache__/
-*.py[cod]
 *.egg-info/
-.pytest_cache/
-.ruff_cache/
+.*cache/
 build/
 dist/
-.coverage
-htmlcov/
 .DS_Store
-benchmark-results.json
