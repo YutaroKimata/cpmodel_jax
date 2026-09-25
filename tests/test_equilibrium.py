@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from cpmodel_jax import _prepare, newton, residual, solve
+from cpmodel_jax import _prepare, newton, residual, solve_eha
 
 
 def make_inputs(shock=True):
@@ -58,9 +58,9 @@ def make_inputs(shock=True):
 def test_equilibrium():
     inputs = make_inputs()
     original = {key: value.copy() for key, value in inputs.items()}
-    result = solve(**inputs)
+    result = solve_eha(**inputs)
     assert max(result["diagnostics"].values()) < 2e-5
-    assert solve(**inputs, initial_log_ratios=result["log_ratios"])["iterations"] == 0
+    assert solve_eha(**inputs, initial_log_ratios=result["log_ratios"])["iterations"] == 0
     counterfactual_net_trade_value = result["counterfactual_net_trade_value"]
     counterfactual_tariff_rates = inputs["counterfactual_tariff_rates"]
     alpha, beta, gamma = (inputs[key] for key in ("alpha", "beta", "gamma"))
@@ -127,7 +127,7 @@ def test_equilibrium():
 
 def test_analytic_no_shock():
     inputs = make_inputs(shock=False)
-    result = solve(**inputs)
+    result = solve_eha(**inputs)
     for key, value in result.items():
         if key.endswith("_ratio"):
             np.testing.assert_allclose(value, 1, atol=3e-6, rtol=0, err_msg=key)
@@ -168,19 +168,36 @@ def test_jvp():
     )
 
 
-def test_nominal_scale_condition():
-    data = _prepare(**make_inputs(shock=False))
-    countries, sectors = data["beta"].shape
-    log_ratios = jnp.full(countries + 2 * countries * sectors, jnp.log(1.1))
-    expected = np.zeros(log_ratios.size)
-    expected[countries - 1] = np.log(1.1)
-    np.testing.assert_allclose(residual(log_ratios, data), expected, atol=1e-6, rtol=0)
+def test_trade_deficits():
+    baseline_net_trade_value = np.array([[2.0, 1.0], [0.5, 3.0]])[:, :, None]
+    inputs = {
+        "theta": [4.0],
+        "alpha": np.ones((2, 1)),
+        "beta": np.ones((2, 1)),
+        "gamma": np.zeros((2, 1, 1)),
+        "baseline_net_trade_value": baseline_net_trade_value,
+        "baseline_tariff_rates": np.zeros_like(baseline_net_trade_value),
+    }
+    baseline = solve_eha(**inputs)
+    np.testing.assert_allclose(baseline["wage_ratio"], 1, atol=3e-6)
+    result = solve_eha(
+        **inputs,
+        counterfactual_tariff_rates=np.array([[0.0, 0.1], [0.2, 0.0]])[:, :, None],
+        technology_scale_ratio=[[1.1], [0.9]],
+    )
+    baseline_value_added = baseline_net_trade_value.sum((0, 2))
+    np.testing.assert_allclose(
+        np.dot(baseline_value_added, result["wage_ratio"]), baseline_value_added.sum(), rtol=2e-5
+    )
+    assert max(result["diagnostics"].values()) < 2e-5
+    trade = result["counterfactual_net_trade_value"]
+    np.testing.assert_allclose(trade.sum((1, 2)) - trade.sum((0, 2)), [0.5, -0.5], atol=2e-5)
 
 
 def test_units_and_country_permutation():
     inputs = make_inputs()
-    reference = solve(**inputs)
-    scaled = solve(
+    reference = solve_eha(**inputs)
+    scaled = solve_eha(
         **{**inputs, "baseline_net_trade_value": inputs["baseline_net_trade_value"] * 1e9}
     )
     for key in ("wage_ratio", "sector_price_ratio", "welfare_ratio", "counterfactual_trade_shares"):
@@ -207,7 +224,7 @@ def test_units_and_country_permutation():
             permuted[key] = value
         else:
             permuted[key] = value[permutation]
-    result = solve(**permuted)
+    result = solve_eha(**permuted)
     for key in ("wage_ratio", "sector_price_ratio", "welfare_ratio", "counterfactual_output"):
         np.testing.assert_allclose(result[key], reference[key][permutation], rtol=2e-5, atol=3e-6)
 
@@ -221,13 +238,13 @@ def test_analytic_one_country_and_zero_links():
         "baseline_net_trade_value": [[[2.0]]],
         "baseline_tariff_rates": [[[0.0]]],
     }
-    result = solve(**inputs, technology_scale_ratio=[[1.21]])
+    result = solve_eha(**inputs, technology_scale_ratio=[[1.21]])
     np.testing.assert_allclose(result["wage_ratio"], 1, atol=3e-7)
     np.testing.assert_allclose(result["welfare_ratio"], 1.21**0.25, atol=3e-7)
     baseline_net_trade_value = np.array([[2.0, 1.0, 0.0], [1.0, 2.0, 1.0], [0.0, 1.0, 2.0]])[
         :, :, None
     ]
-    result = solve(
+    result = solve_eha(
         theta=[4.0],
         alpha=np.ones((3, 1)),
         beta=np.ones((3, 1)),
@@ -243,16 +260,16 @@ def test_analytic_one_country_and_zero_links():
 def test_validation_and_failures():
     inputs = make_inputs()
     with pytest.raises(RuntimeError, match="did not converge"):
-        solve(**inputs, max_iter=1)
+        solve_eha(**inputs, max_iter=1)
     with pytest.raises(ValueError, match="shares"):
-        solve(**{**inputs, "alpha": inputs["alpha"] * 1.001})
+        solve_eha(**{**inputs, "alpha": inputs["alpha"] * 1.001})
 
 
 def test_input_precision():
     inputs = make_inputs()
-    reference = solve(**inputs)
+    reference = solve_eha(**inputs)
     with jax.enable_x64():
-        result = solve(**{key: value.astype(np.float32) for key, value in inputs.items()})
+        result = solve_eha(**{key: value.astype(np.float32) for key, value in inputs.items()})
         assert jax.config.x64_enabled
         for key, value in reference.items():
             if isinstance(value, np.ndarray):

@@ -12,13 +12,13 @@ is the numeraire.
 Python 3.12+ is required. In your project:
 
 ```sh
-uv add git+https://github.com/YutaroKimata/cpmodel_jax.git
+uv add git+https://github.com/YutaroKimata/CPModel-JAX.git
 ```
 
 ```python
-from cpmodel_jax import solve
+from cpmodel_jax import solve_eha
 
-result = solve(**inputs)
+result = solve_eha(**inputs)
 print(100 * (result["welfare_ratio"] - 1))
 ```
 
@@ -43,7 +43,7 @@ IO axes are **country, output sector, input sector**.
 
 ## Outputs
 
-`solve` returns a dictionary. Economic outputs are NumPy arrays with the same axis
+`solve_eha` returns a dictionary. Economic outputs are NumPy arrays with the same axis
 conventions as the inputs. Ratios are counterfactual/baseline; monetary levels
 retain the input units.
 

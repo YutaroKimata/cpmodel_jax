@@ -8,7 +8,7 @@ from zipfile import ZipFile
 import numpy as np
 from scipy.io import loadmat
 
-from cpmodel_jax import solve
+from cpmodel_jax import solve_eha
 
 DATA_URL = "https://spinup-000d1a-wp-offload-media.s3.amazonaws.com/faculty/wp-content/uploads/sites/40/2019/06/Data_and_Codes_CP.zip"
 DATA_SHA256 = "6e68475a047b824890b53f1466c745ac6c5553416a0396b4df1d9c0ce9be6f5a"
@@ -107,7 +107,7 @@ def main():
     )
     arguments = parser.parse_args()
     inputs = load_nafta(arguments.archive)
-    result = solve(**inputs)
+    result = solve_eha(**inputs)
     country_indices = list(NAFTA.values())
     welfare_table = paper_welfare(inputs, result)[country_indices]
     np.testing.assert_allclose(welfare_table, PUBLISHED_WELFARE, atol=0.005, rtol=0)

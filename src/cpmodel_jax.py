@@ -144,6 +144,7 @@ def _state(log_ratios, data):
         + (counterfactual_net_trade_value * data["counterfactual_tariff_rates"]).sum((1, 2))
     )
     return {
+        "log_wage_ratio": log_wage_ratio,
         "log_unit_cost_ratio": log_unit_cost_ratio,
         "log_sector_price_ratio": log_sector_price_ratio,
         "log_share_denominator": log_share_denominator,
@@ -162,7 +163,8 @@ def residual(log_ratios, data):
     log_wage_ratio_target = jnp.log(
         (data["beta"] * state["counterfactual_output"]).sum(1) / data["baseline_value_added"]
     )
-    wage_residual = log_ratios[: state["wage_ratio"].size - 1] - log_wage_ratio_target[:-1]
+    wage_residual = state["log_wage_ratio"] - log_wage_ratio_target
+    wage_residual = wage_residual[:-1] - wage_residual[-1]
     numeraire_residual = jnp.log(
         (data["baseline_value_added"] * state["wage_ratio"]).sum()
         / data["baseline_value_added"].sum()
@@ -235,7 +237,7 @@ def _results(log_ratios, data):
     return values, labor_error
 
 
-def solve(
+def solve_eha(
     *,
     theta,
     alpha,
